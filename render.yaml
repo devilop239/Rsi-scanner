@@ -1,0 +1,63 @@
+services:
+  - type: web
+    name: nifty-stoch-rsi
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python src/main.py"
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: BOT_TOKEN
+        sync: false       # Set manually in Render dashboard
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: ADMIN_IDS
+        sync: false
+      - key: CRON_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nifty-stoch-rsi-db
+          property: connectionString
+      - key: LOG_LEVEL
+        value: INFO
+
+  - type: cron
+    name: nifty-daily-scan
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    # Runs at 11:00 UTC = 16:30 IST, Mon–Fri
+    schedule: "0 11 * * 1-5"
+    startCommand: >
+      python -c "
+      import os, urllib.request, json;
+      secret = os.environ['CRON_SECRET'];
+      base = os.environ['WEBHOOK_BASE_URL'].rstrip('/');
+      req = urllib.request.Request(
+          f'{base}/internal/run-scan',
+          method='POST',
+          headers={'Authorization': f'Bearer {secret}'}
+      );
+      res = urllib.request.urlopen(req, timeout=120);
+      print(json.loads(res.read()))
+      "
+    envVars:
+      - key: CRON_SECRET
+        fromService:
+          name: nifty-stoch-rsi
+          type: web
+          envVarKey: CRON_SECRET
+      - key: WEBHOOK_BASE_URL
+        fromService:
+          name: nifty-stoch-rsi
+          type: web
+          envVarKey: WEBHOOK_BASE_URL
+
+databases:
+  - name: nifty-stoch-rsi-db
+    plan: free
+    databaseName: niftystochrsi
+    user: niftyapp
