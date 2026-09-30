@@ -7,7 +7,7 @@ converting IST → UTC before insertion.
 from __future__ import annotations
 
 import enum
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
@@ -69,10 +69,13 @@ class Symbol(Base):
     isin: Mapped[str | None] = mapped_column(String(12), unique=True, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     added_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
     )
 
     candles: Mapped[list[DailyCandle]] = relationship("DailyCandle", back_populates="symbol")
@@ -107,7 +110,7 @@ class DailyCandle(Base):
     adj_close: Mapped[float | None] = mapped_column(Float, nullable=True)
     volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
     symbol: Mapped[Symbol] = relationship("Symbol", back_populates="candles")
@@ -135,7 +138,7 @@ class IndicatorValue(Base):
     stoch_k: Mapped[float | None] = mapped_column(Float, nullable=True)
     stoch_d: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
     symbol: Mapped[Symbol] = relationship("Symbol", back_populates="indicators")
@@ -166,7 +169,7 @@ class Signal(Base):
     rsi: Mapped[float] = mapped_column(Float, nullable=False)
     close: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
     symbol: Mapped[Symbol] = relationship("Symbol", back_populates="signals")
@@ -222,11 +225,16 @@ class Subscriber(Base):
         Enum(UserRole, name="user_role_enum"), default=UserRole.USER, nullable=False
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    
+    # Custom thresholds
+    custom_stoch_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_stoch_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     subscribed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
     last_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
 
     def __repr__(self) -> str:

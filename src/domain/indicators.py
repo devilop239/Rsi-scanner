@@ -121,17 +121,28 @@ class StochRSIResult:
         self.d = d
 
     def latest(self) -> dict[str, float | None]:
-        """Return the most recent non-NaN values as a plain dict."""
+        """Return the most recent non-NaN values as a plain dict.
+
+        Includes ``prev_k`` / ``prev_d`` (the second-to-last valid values) so
+        callers can detect *crosses* into extreme zones rather than persistent
+        membership.
+        """
 
         def _last(s: pd.Series) -> float | None:
             val = s.dropna()
             return float(val.iloc[-1]) if not val.empty else None
+
+        def _prev(s: pd.Series) -> float | None:
+            val = s.dropna()
+            return float(val.iloc[-2]) if len(val) >= 2 else None
 
         return {
             "rsi": _last(self.rsi),
             "stoch_raw": _last(self.raw),
             "stoch_k": _last(self.k),
             "stoch_d": _last(self.d),
+            "prev_k": _prev(self.k),
+            "prev_d": _prev(self.d),
         }
 
 
@@ -186,28 +197,39 @@ def compute_stoch_rsi(
 def classify_signal(
     k: float | None,
     d: float | None,
+    prev_k: float | None,
+    prev_d: float | None,
     *,
     low_threshold: float = 20.0,
     high_threshold: float = 80.0,
     use_d: bool = False,
 ) -> str | None:
-    """Classify whether the current StochRSI reading is in an extreme zone.
+    """Classify whether StochRSI just *crossed into* an extreme zone.
+
+    Only fires on the **entry cross**, not on sustained membership, to prevent
+    repeated alerts when a stock stays oversold/overbought for weeks.
 
     Args:
         k:              Current %K value.
         d:              Current %D value.
+        prev_k:         Previous bar %K value.
+        prev_d:         Previous bar %D value.
         low_threshold:  Oversold threshold (default 20).
         high_threshold: Overbought threshold (default 80).
-        use_d:          If True, compare %D against thresholds (use_d=False → %K).
+        use_d:          If True, compare %D against thresholds (False → %K).
 
     Returns:
-        "OVERSOLD", "OVERBOUGHT", or None.
+        ``"OVERSOLD"``, ``"OVERBOUGHT"``, or ``None``.
     """
-    value = d if use_d else k
-    if value is None:
+    curr = d if use_d else k
+    prev = prev_d if use_d else prev_k
+
+    if curr is None:
         return None
-    if value < low_threshold:
+
+    # Level-based detection: fire whenever the threshold is breached
+    if curr < low_threshold:
         return "OVERSOLD"
-    if value > high_threshold:
+    if curr > high_threshold:
         return "OVERBOUGHT"
     return None

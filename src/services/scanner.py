@@ -12,7 +12,6 @@ Responsibilities:
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -20,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.data.base import MarketDataProvider
-from src.data.calendar import is_trading_day, last_trading_day
+from src.data.calendar import last_trading_day
 from src.data.index_repo import get_active_symbols
 from src.domain.indicators import classify_signal, compute_stoch_rsi
 from src.infra.config import settings
@@ -99,6 +98,10 @@ class ScannerService:
         """
         started_at = datetime.now(timezone.utc)
         trading_date = last_trading_day()
+
+        if trading_date > date.today():
+            log.error("trading_date_in_future", trading_date=str(trading_date), today=str(date.today()))
+            raise ValueError(f"Trading date {trading_date} is in the future. Check server NTP sync.")
 
         # ── Idempotency: don't re-run for the same trading date ──────────────
         if not force:
@@ -179,121 +182,135 @@ class ScannerService:
             return
 
         tickers = [s.ticker for s in symbols]
-        symbol_map: dict[str, Symbol] = {s.ticker: s for s in symbols}
 
         # Fetch price history for all tickers in one batch call
         start_date = trading_date - timedelta(days=settings.data_lookback_days)
         candle_batch = await self._provider.fetch_candles(tickers, start_date, trading_date)
 
-        # Process each symbol
-        for symbol in symbols:
-            ticker = symbol.ticker
-            if ticker not in candle_batch:
-                log.warning("ticker_not_in_response", ticker=ticker)
-                result.failed += 1
-                continue
+        # Collect DB objects and signals across all symbols, write in one session
+        new_candles: list[DailyCandle] = []
+        new_indicators: list[IndicatorValue] = []
 
-            candle_data = candle_batch[ticker]
-            adj_close = candle_data.df.get("adj_close")
+        async with self._db.session() as session:
+            for symbol in symbols:
+                ticker = symbol.ticker
+                if ticker not in candle_batch:
+                    log.warning("ticker_not_in_response", ticker=ticker)
+                    result.failed += 1
+                    continue
 
-            if adj_close is None or adj_close.empty:
-                log.warning("no_adj_close_data", ticker=ticker)
-                result.failed += 1
-                continue
+                candle_data = candle_batch[ticker]
+                adj_close = candle_data.df.get("adj_close")
 
-            try:
-                # Compute StochRSI
-                stoch = compute_stoch_rsi(
-                    adj_close,
-                    rsi_length=settings.rsi_length,
-                    stoch_length=settings.stoch_length,
-                    k_smooth=settings.stoch_k_smooth,
-                    d_smooth=settings.stoch_d_smooth,
-                    min_candles=settings.min_candles,
-                )
-            except ValueError as exc:
-                log.warning("insufficient_candles", ticker=ticker, reason=str(exc))
-                result.skipped += 1
-                continue
-            except Exception as exc:
-                log.error("indicator_compute_error", ticker=ticker, error=str(exc))
-                result.failed += 1
-                continue
+                if adj_close is None or adj_close.empty:
+                    log.warning("no_adj_close_data", ticker=ticker)
+                    result.failed += 1
+                    continue
 
-            latest = stoch.latest()
-            k_val = latest.get("stoch_k")
-            d_val = latest.get("stoch_d")
-            rsi_val = latest.get("rsi")
+                try:
+                    stoch = compute_stoch_rsi(
+                        adj_close,
+                        rsi_length=settings.rsi_length,
+                        stoch_length=settings.stoch_length,
+                        k_smooth=settings.stoch_k_smooth,
+                        d_smooth=settings.stoch_d_smooth,
+                        min_candles=settings.min_candles,
+                    )
+                except ValueError as exc:
+                    log.warning("insufficient_candles", ticker=ticker, reason=str(exc))
+                    result.skipped += 1
+                    continue
+                except Exception as exc:
+                    log.error("indicator_compute_error", ticker=ticker, error=str(exc))
+                    result.failed += 1
+                    continue
 
-            if k_val is None or d_val is None or rsi_val is None:
-                log.warning("indicator_returned_none", ticker=ticker)
-                result.failed += 1
-                continue
+                latest = stoch.latest()
+                k_val = latest.get("stoch_k")
+                d_val = latest.get("stoch_d")
+                rsi_val = latest.get("rsi")
+                prev_k = latest.get("prev_k")
+                prev_d = latest.get("prev_d")
 
-            # Get latest close price
-            close_series = candle_data.df["close"] if "close" in candle_data.df.columns else adj_close
-            latest_close = float(close_series.dropna().iloc[-1])
+                if k_val is None or d_val is None or rsi_val is None:
+                    log.warning("indicator_returned_none", ticker=ticker)
+                    result.failed += 1
+                    continue
 
-            # Save latest candle + indicator to DB
-            async with self._db.session() as session:
-                await self._save_candle(session, symbol.id, candle_data.df, trading_date)
-                await self._save_indicator(
+                # Get latest close price
+                close_series = candle_data.df["close"] if "close" in candle_data.df.columns else adj_close
+                latest_close = float(close_series.dropna().iloc[-1])
+
+                # Collect candle + indicator for batch write
+                candle = await self._build_candle(session, symbol.id, candle_data.df, trading_date)
+                if candle is not None:
+                    new_candles.append(candle)
+
+                indicator = await self._build_indicator(
                     session, symbol.id, trading_date,
                     rsi=rsi_val, stoch_raw=latest.get("stoch_raw"),
                     stoch_k=k_val, stoch_d=d_val,
                 )
+                if indicator is not None:
+                    new_indicators.append(indicator)
 
-            result.processed += 1
+                result.processed += 1
 
-            # Check thresholds
-            use_d = settings.signal_line == "d"
-            signal_type_str = classify_signal(
-                k=k_val, d=d_val,
-                low_threshold=settings.stoch_low,
-                high_threshold=settings.stoch_high,
-                use_d=use_d,
-            )
+                # Cross-based signal classification
+                use_d = settings.signal_line == "d"
+                signal_type_str = classify_signal(
+                    k=k_val, d=d_val,
+                    prev_k=prev_k, prev_d=prev_d,
+                    low_threshold=settings.stoch_low,
+                    high_threshold=settings.stoch_high,
+                    use_d=use_d,
+                )
 
-            if signal_type_str:
-                signal_type = SignalType(signal_type_str)
-                async with self._db.session() as session:
+                if signal_type_str:
+                    signal_type = SignalType(signal_type_str)
                     await self._save_signal(
                         session, symbol.id, trading_date,
                         signal_type, k_val, d_val, rsi_val, latest_close,
                     )
 
-                result.signals.append(SignalRecord(
-                    ticker=ticker,
-                    company_name=symbol.company_name,
-                    signal_type=signal_type_str,
-                    stoch_k=round(k_val, 2),
-                    stoch_d=round(d_val, 2),
-                    rsi=round(rsi_val, 2),
-                    close=round(latest_close, 2),
-                    trading_date=trading_date,
-                ))
+                    result.signals.append(SignalRecord(
+                        ticker=ticker,
+                        company_name=symbol.company_name,
+                        signal_type=signal_type_str,
+                        stoch_k=round(k_val, 2),
+                        stoch_d=round(d_val, 2),
+                        rsi=round(rsi_val, 2),
+                        close=round(latest_close, 2),
+                        trading_date=trading_date,
+                    ))
 
-                log.info(
-                    "signal_detected",
-                    ticker=ticker,
-                    signal_type=signal_type_str,
-                    stoch_k=round(k_val, 2),
-                )
+                    log.info(
+                        "signal_detected",
+                        ticker=ticker,
+                        signal_type=signal_type_str,
+                        stoch_k=round(k_val, 2),
+                    )
+
+            # Batch write candles and indicators in one commit
+            if new_candles:
+                session.add_all(new_candles)
+            if new_indicators:
+                session.add_all(new_indicators)
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
-    async def _save_candle(
+    async def _build_candle(
         self,
         session: AsyncSession,
         symbol_id: int,
         df: "pd.DataFrame",  # type: ignore[name-defined]
         trading_date: date,
-    ) -> None:
-        """Upsert the latest daily candle row."""
+    ) -> DailyCandle | None:
+        """Upsert the latest daily candle row and return the ORM object."""
         import pandas as pd
 
         if df.empty:
-            return
+            return None
 
         # Only save the most recent row for the trading date
         row = df[df.index.date == trading_date]  # type: ignore[attr-defined]
@@ -312,7 +329,6 @@ class ScannerService:
 
         if candle is None:
             candle = DailyCandle(symbol_id=symbol_id, candle_date=trading_date)
-            session.add(candle)
 
         candle.open = float(r.get("open")) if pd.notna(r.get("open")) else None
         candle.high = float(r.get("high")) if pd.notna(r.get("high")) else None
@@ -321,8 +337,9 @@ class ScannerService:
         candle.adj_close = float(r.get("adj_close")) if pd.notna(r.get("adj_close")) else None
         candle.volume = int(r.get("volume")) if pd.notna(r.get("volume")) else None
         candle.fetched_at = datetime.now(timezone.utc)
+        return candle
 
-    async def _save_indicator(
+    async def _build_indicator(
         self,
         session: AsyncSession,
         symbol_id: int,
@@ -332,8 +349,8 @@ class ScannerService:
         stoch_raw: float | None,
         stoch_k: float,
         stoch_d: float,
-    ) -> None:
-        """Upsert the indicator value row for (symbol, date)."""
+    ) -> IndicatorValue | None:
+        """Upsert the indicator value row for (symbol, date) and return the ORM object."""
         existing = await session.execute(
             select(IndicatorValue).where(
                 IndicatorValue.symbol_id == symbol_id,
@@ -344,13 +361,13 @@ class ScannerService:
 
         if iv is None:
             iv = IndicatorValue(symbol_id=symbol_id, value_date=value_date)
-            session.add(iv)
 
         iv.rsi = rsi
         iv.stoch_raw = stoch_raw
         iv.stoch_k = stoch_k
         iv.stoch_d = stoch_d
         iv.computed_at = datetime.now(timezone.utc)
+        return iv
 
     async def _save_signal(
         self,
@@ -393,7 +410,7 @@ class ScannerService:
                 ScanRun.status == ScanStatus.SUCCESS,
             )
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def _update_scan_run(
         self,

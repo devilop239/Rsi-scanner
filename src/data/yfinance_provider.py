@@ -53,10 +53,17 @@ def _yf_download_sync(
     end: date,
 ) -> pd.DataFrame:
     """Blocking yfinance download — called inside asyncio.to_thread.
-    
-    Downloads in chunks of 15 tickers using relative period="1y" to avoid
+
+    Downloads in chunks of 15 tickers with threads=False to avoid
     Yahoo Finance connection pool exhaustion and rate limiting.
+    The end date is made exclusive (+1 day) per yfinance convention.
     """
+    from datetime import timedelta
+
+    end_exclusive = end + timedelta(days=1)
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end_exclusive.strftime("%Y-%m-%d")
+
     chunk_size = 15
     dfs: list[pd.DataFrame] = []
 
@@ -65,7 +72,8 @@ def _yf_download_sync(
         try:
             df_chunk = yf.download(
                 tickers=chunk,
-                period="1y",
+                start=start.strftime("%Y-%m-%d"),
+                end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
                 auto_adjust=False,
                 progress=False,
                 threads=False,
@@ -99,14 +107,19 @@ def _parse_single_ticker(
             elif ticker in raw.columns.get_level_values(1):
                 df = raw.xs(ticker, level=1, axis=1).copy()
             else:
-                log.warning("ticker_missing_from_response", ticker=ticker)
+                log.warning("ticker_missing_from_multiindex", ticker=ticker, levels=[raw.columns.get_level_values(0).unique().tolist()[:3], raw.columns.get_level_values(1).unique().tolist()[:3]])
                 return None
         else:
+            log.warning("raw_columns_not_multiindex", ticker=ticker, columns=list(raw.columns))
             df = raw.copy()
 
         # Rename to canonical column names
         df = df.rename(columns=_COLUMN_MAP)
         df.index = pd.to_datetime(df.index).normalize()  # Ensure date-only
+
+        # Fallback if yfinance drops Adj Close
+        if "adj_close" not in df.columns and "close" in df.columns:
+            df["adj_close"] = df["close"]
 
         # Keep only columns we care about
         expected = list(_COLUMN_MAP.values())
@@ -118,7 +131,7 @@ def _parse_single_ticker(
             df = df[df["adj_close"].notna()]
 
         if df.empty:
-            log.warning("empty_dataframe_after_cleaning", ticker=ticker)
+            log.warning("empty_dataframe_after_cleaning", ticker=ticker, present_columns=present)
             return None
 
         # Ensure ascending date order

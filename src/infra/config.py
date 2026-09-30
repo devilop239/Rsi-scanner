@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     # ── Alerting / Deduplication ─────────────────────────────────────────────
     alert_cooldown_days: int = Field(
         default=7,
-        ge=1,
+        ge=0,
         description="Days before re-alerting for the same stock/zone after re-entry",
     )
     alert_on_exit: bool = Field(
@@ -151,6 +151,14 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [int(x) for x in v]
         return []
+
+    @field_validator("database_url", mode="after")
+    @classmethod
+    def fix_postgres_scheme(cls, v: str) -> str:
+        """Fix Render's postgres:// to postgresql+asyncpg:// for SQLAlchemy."""
+        if v and v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        return v
 
     @property
     def is_webhook_mode(self) -> bool:

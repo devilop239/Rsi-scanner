@@ -125,3 +125,99 @@ async def _seed_symbols(session: AsyncSession) -> list[Symbol]:
 def get_fallback_tickers() -> list[str]:
     """Return all Nifty 50 ticker strings from the bundled fallback list."""
     return [s.ticker for s in NIFTY50_FALLBACK]
+
+
+async def sync_nifty_constituents(session: AsyncSession) -> int:
+    """Fetch the official NSE Nifty 50 constituents CSV and upsert into the DB.
+
+    Downloads from ``settings.nifty50_csv_url``, parses the "Symbol" column,
+    appends ".NS", and upserts into the symbols table.  Falls back to
+    ``NIFTY50_FALLBACK`` silently if the HTTP request fails.
+
+    Returns:
+        Number of symbols upserted/confirmed.
+    """
+    from datetime import datetime, timezone
+
+    import asyncio
+
+    from src.infra.config import settings
+
+    symbols_to_upsert: list[SymbolInfo] = []
+
+    try:
+        raw_csv = await asyncio.to_thread(_fetch_csv_sync, settings.nifty50_csv_url)
+        symbols_to_upsert = _parse_nifty_csv(raw_csv)
+        log.info("nifty50_csv_fetched", count=len(symbols_to_upsert))
+    except Exception as exc:
+        log.warning(
+            "nifty50_csv_fetch_failed_using_fallback",
+            error=str(exc),
+            fallback_count=len(NIFTY50_FALLBACK),
+        )
+        symbols_to_upsert = NIFTY50_FALLBACK
+
+    if not symbols_to_upsert:
+        symbols_to_upsert = NIFTY50_FALLBACK
+
+    # Upsert: add if missing, mark existing as active; deactivate removed tickers
+    from sqlalchemy import select as _select
+
+    live_tickers = {s.ticker for s in symbols_to_upsert}
+    now = datetime.now(timezone.utc)
+
+    result = await session.execute(_select(Symbol))
+    existing_symbols: dict[str, Symbol] = {s.ticker: s for s in result.scalars().all()}
+
+    for info in symbols_to_upsert:
+        sym = existing_symbols.get(info.ticker)
+        if sym is None:
+            sym = Symbol(
+                ticker=info.ticker,
+                company_name=info.company_name,
+                is_active=True,
+                added_at=now,
+                updated_at=now,
+            )
+            session.add(sym)
+        else:
+            sym.is_active = True
+            sym.updated_at = now
+
+    # Deactivate tickers no longer in the index
+    for ticker, sym in existing_symbols.items():
+        if ticker not in live_tickers and sym.is_active:
+            sym.is_active = False
+            sym.updated_at = now
+
+    await session.flush()
+    log.info("nifty50_constituents_synced", count=len(symbols_to_upsert))
+    return len(symbols_to_upsert)
+
+
+def _fetch_csv_sync(url: str) -> str:
+    """Synchronous HTTP GET for the NSE CSV (called via asyncio.to_thread)."""
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=15) as resp:  # noqa: S310
+        raw: bytes = resp.read()
+    return raw.decode("utf-8", errors="replace")
+
+
+def _parse_nifty_csv(csv_text: str) -> list[SymbolInfo]:
+    """Parse the NSE Nifty 50 CSV and return a list of SymbolInfo.
+
+    The CSV has a "Symbol" column and a "Company Name" column.
+    yfinance uses uppercase ticker + ".NS" suffix.
+    """
+    import csv
+    import io
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    results: list[SymbolInfo] = []
+    for row in reader:
+        symbol = (row.get("Symbol") or "").strip().upper()
+        name = (row.get("Company Name") or symbol).strip()
+        if symbol:
+            results.append(SymbolInfo(ticker=f"{symbol}.NS", company_name=name))
+    return results or NIFTY50_FALLBACK

@@ -54,6 +54,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Run Alembic migrations automatically on startup
     await _run_migrations()
 
+    # Sync Nifty 50 constituents (falls back to bundled list if NSE is unreachable)
+    try:
+        from src.data.index_repo import sync_nifty_constituents
+        async with db.session() as session:
+            await sync_nifty_constituents(session)
+    except Exception as exc:
+        log.warning("constituent_sync_failed_on_startup", error=str(exc))
+
     # Create Telegram bot and dispatcher
     bot = create_bot()
     dp = create_dispatcher(db=db)
@@ -98,12 +106,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 async def _run_migrations() -> None:
     """Apply pending Alembic migrations on startup using Alembic API."""
+    import asyncio
     from alembic import command
     from alembic.config import Config
 
     try:
         alembic_cfg = Config("alembic.ini")
-        command.upgrade(alembic_cfg, "head")
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
         log.info("migrations_applied")
     except Exception as exc:
         log.error("migrations_exception", error=str(exc))

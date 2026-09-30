@@ -91,7 +91,7 @@ class ScanResponse(BaseModel):
     dependencies=[Depends(verify_cron_secret)],
     response_model=ScanResponse,
 )
-async def run_scan_endpoint(request: Request) -> ScanResponse:
+async def run_scan_endpoint(request: Request, force: bool = False) -> ScanResponse:
     """Trigger the Nifty 50 StochRSI scan.
 
     Protected by Bearer token (CRON_SECRET env var).
@@ -102,7 +102,7 @@ async def run_scan_endpoint(request: Request) -> ScanResponse:
     from src.services.alerter import AlerterService
     from src.services.scanner import ScannerService
 
-    if not is_trading_day():
+    if not is_trading_day() and not force:
         log.info("scan_skipped_non_trading_day")
         return ScanResponse(status="skipped", message="Not a trading day.")
 
@@ -112,7 +112,7 @@ async def run_scan_endpoint(request: Request) -> ScanResponse:
     try:
         provider = YFinanceProvider()
         scanner = ScannerService(provider=provider, db=db)
-        result = await scanner.run_scan()
+        result = await scanner.run_scan(force=force)
 
         if result.was_skipped:
             return ScanResponse(
@@ -139,3 +139,5 @@ async def run_scan_endpoint(request: Request) -> ScanResponse:
     except Exception as exc:
         log.error("scan_endpoint_error", error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+
+
