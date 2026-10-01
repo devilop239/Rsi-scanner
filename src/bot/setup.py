@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from src.bot.handlers.commands import router as commands_router
 from src.bot.middlewares.rate_limit import RateLimitMiddleware
@@ -31,7 +32,7 @@ def create_dispatcher(db: DatabaseManager) -> Dispatcher:
       - All command handlers
       - db and bot as workflow_data (injected into handlers via DI)
     """
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
 
     # Middleware — applied to all incoming messages
     dp.message.middleware(RateLimitMiddleware())

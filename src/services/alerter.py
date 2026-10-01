@@ -115,8 +115,8 @@ class AlerterService:
                 doc = BufferedInputFile(html_bytes, filename=filename)
                 
                 caption = (
-                    f"🚨 <b>ᴍ ᴀ ʀ ᴋ ᴇ ᴛ  ᴀ ʟ ᴇ ʀ ᴛ</b>\n<i>{scan_result.trading_date.strftime('%d %b %Y')}</i>\n\n"
-                    f"Found {len(oversold)} Oversold and {len(overbought)} Overbought setups.\n\n"
+                    f"🚨 <b>ᴍᴀʀᴋᴇᴛ ᴀʟᴇʀᴛ</b>\n<i>{scan_result.trading_date.strftime('%d %b %Y')}</i>\n\n"
+                    f"<blockquote>Found {len(oversold)} Oversold and {len(overbought)} Overbought setups.</blockquote>\n\n"
                     "📄 <b>Please open the attached HTML report for full details!</b>"
                 )
                 
@@ -206,34 +206,34 @@ class AlerterService:
         """Build one or more HTML messages, splitting if > 4096 chars."""
         lines: list[str] = []
         date_str = trading_date.strftime("%d %b %Y")
-        lines.append(f"🚨 <b>ᴍ ᴀ ʀ ᴋ ᴇ ᴛ  ᴀ ʟ ᴇ ʀ ᴛ</b>\n<i>{date_str}</i>\n\n")
+        lines.append(f"🚨 <b>ᴍᴀʀᴋᴇᴛ ᴀʟᴇʀᴛ</b>\n<i>{date_str}</i>\n\n")
 
         if oversold:
-            lines.append(f"🟢 <b>ᴏ ᴠ ᴇ ʀ ѕ ᴏ ʟ ᴅ  ᴢ ᴏ ɴ ᴇ</b>  (StochRSI &lt; {low_thresh})\n")
+            lines.append(f"🟢 <b>ᴏᴠᴇʀsᴏʟᴅ ᴢᴏɴᴇ</b>  (StochRSI &lt; {low_thresh})\n")
             for s in oversold:
                 lines.append(
                     f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
-                    f"  ├ ᴘ ʀ ɪ ᴄ ᴇ : ₹{s.close:,.2f}\n"
-                    f"  ├ ʀ ѕ ɪ : {s.rsi:.1f}\n"
-                    f"  └ ѕ ᴛ ᴏ ᴄ ʜ : <b>{s.stoch_k:.1f}</b>\n"
+                    f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
+                    f"  ├ ʀsɪ : {s.rsi:.1f}\n"
+                    f"  └ sᴛᴏᴄʜ : <b>{s.stoch_k:.1f}</b>\n"
                 )
             lines.append("\n")
 
         if overbought:
             if oversold:
                 lines.append("─" * 25 + "\n\n")
-            lines.append(f"🔴 <b>ᴏ ᴠ ᴇ ʀ ʙ ᴏ ᴜ ɢ ʜ ᴛ  ᴢ ᴏ ɴ ᴇ</b>  (StochRSI &gt; {high_thresh})\n")
+            lines.append(f"🔴 <b>ᴏᴠᴇʀʙᴏᴜɢʜᴛ ᴢᴏɴᴇ</b>  (StochRSI &gt; {high_thresh})\n")
             for s in overbought:
                 lines.append(
                     f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
-                    f"  ├ ᴘ ʀ ɪ ᴄ ᴇ : ₹{s.close:,.2f}\n"
-                    f"  ├ ʀ ѕ ɪ : {s.rsi:.1f}\n"
-                    f"  └ ѕ ᴛ ᴏ ᴄ ʜ : <b>{s.stoch_k:.1f}</b>\n"
+                    f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
+                    f"  ├ ʀsɪ : {s.rsi:.1f}\n"
+                    f"  └ sᴛᴏᴄʜ : <b>{s.stoch_k:.1f}</b>\n"
                 )
             lines.append("\n")
 
         disclaimer = (
-            "<i>⚠️ ᴛ ʀ ᴀ ᴅ ᴇ  ѕ ᴇ ᴛ ᴜ ᴘ ѕ  ᴅ ᴇ ᴛ ᴇ ᴄ ᴛ ᴇ ᴅ  ᴀ ᴜ ᴛ ᴏ ᴍ ᴀ ᴛ ɪ ᴄ ᴀ ʟ ʟ ʏ. ᴅ ᴏ  ʏ ᴏ ᴜ ʀ  ᴏ ᴡ ɴ  ʀ ᴇ ѕ ᴇ ᴀ ʀ ᴄ ʜ.</i>"
+            "<i>⚠️ ᴛʀᴀᴅᴇ sᴇᴛᴜᴘs ᴅᴇᴛᴇᴄᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ. ᴅᴏ ʏᴏᴜʀ ᴏᴡɴ ʀᴇsᴇᴀʀᴄʜ.</i>"
         )
         lines.append(disclaimer)
 
