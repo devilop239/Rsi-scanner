@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: nifty_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nifty_user
+      POSTGRES_PASSWORD: nifty_password
+      POSTGRES_DB: nifty_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nifty_user -d nifty_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    container_name: nifty_bot
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override the DATABASE_URL to use the internal Docker network
+      - DATABASE_URL=postgresql://nifty_user:nifty_password@db:5432/nifty_db
+      - ENVIRONMENT=production
+
+  cron:
+    image: alpine:latest
+    container_name: nifty_cron
+    restart: unless-stopped
+    depends_on:
+      - bot
+    env_file:
+      - .env
+    command: >
+      /bin/sh -c "
+      apk add --no-cache curl tzdata &&
+      cp /usr/share/zoneinfo/Asia/Kolkata /etc/localtime &&
+      echo \"30 16 * * 1-5 curl -s -X POST http://bot:8000/internal/run-scan?force=false -H 'Authorization: Bearer $${CRON_SECRET}'\" > /etc/crontabs/root &&
+      echo 'Cron daemon started. Scan scheduled at 16:30 IST on Mon-Fri.' &&
+      crond -f -d 8
+      "
+
+volumes:
+  postgres_data:
