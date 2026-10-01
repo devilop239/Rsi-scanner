@@ -189,11 +189,9 @@ class YFinanceProvider:
         def _do_download(t: str) -> pd.DataFrame:
             df = yf.download(
                 tickers=t,
-                start=start_str,
-                end=end_str,
+                period="1y",
                 auto_adjust=False,
                 progress=False,
-                threads=False,
             )
             if df.empty:
                 raise RuntimeError(f"yfinance returned empty data for {t}. Check network/DNS or ticker validity.")
