@@ -51,7 +51,7 @@ def configure_logging(log_level: str = "INFO", *, json_logs: bool = True) -> Non
     structlog.configure(
         processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(
-            logging.getLevelNamesMapping().get(log_level.upper(), logging.INFO)
+            getattr(logging, log_level.upper(), logging.INFO)
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(sys.stdout),
