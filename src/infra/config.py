@@ -159,7 +159,7 @@ class Settings(BaseSettings):
         if v:
             if v.startswith("postgres://"):
                 return v.replace("postgres://", "postgresql+asyncpg://", 1)
-            elif v.startswith("postgresql://"):
+            elif v.startswith("postgresql://") and not v.startswith("postgresql+"):
                 return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
@@ -180,3 +180,25 @@ class Settings(BaseSettings):
 
 # Module-level singleton — import this everywhere.
 settings = Settings()
+
+# Auto-fallback: if we're in development mode and the DB URL points to a
+# remote PostgreSQL that this machine can't reach, silently switch to local SQLite.
+if settings.environment == "development" and "asyncpg" in settings.database_url:
+    import socket
+    try:
+        # Extract hostname from the database URL
+        from urllib.parse import urlparse
+        parsed = urlparse(settings.database_url.replace("postgresql+asyncpg://", "postgresql://"))
+        host = parsed.hostname or ""
+        port = parsed.port or 5432
+        socket.getaddrinfo(host, port)
+    except (socket.gaierror, OSError):
+        import structlog
+        _log = structlog.get_logger(__name__)
+        _log.warning(
+            "postgres_unreachable_falling_back_to_sqlite",
+            host=host,
+            fallback="sqlite+aiosqlite:///./dev.db",
+        )
+        settings.database_url = "sqlite+aiosqlite:///./dev.db"
+

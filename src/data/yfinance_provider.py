@@ -54,8 +54,10 @@ def _parse_single_ticker(
     as_of: date,
     source: str,
 ) -> CandleData | None:
-    """Extract and clean one ticker's data from the batch download result."""
+    """Extract and clean one ticker's data from a single-ticker download result."""
     try:
+        # Since we download 1 ticker at a time as a string, yfinance returns a single-index DataFrame.
+        # But we handle MultiIndex just in case yfinance changes behavior.
         if isinstance(raw.columns, pd.MultiIndex):
             if ticker in raw.columns.get_level_values(0):
                 df = raw[ticker].copy()
@@ -132,7 +134,7 @@ class YFinanceProvider:
         start: date,
         end: date,
     ) -> dict[str, CandleData]:
-        """Fetch adjusted OHLCV data for all tickers in smaller chunks to avoid OOM."""
+        """Fetch adjusted OHLCV data one ticker at a time to avoid OOM and MultiIndex issues."""
         if not tickers:
             return {}
 
@@ -146,50 +148,32 @@ class YFinanceProvider:
 
         as_of = date.today()
         results: dict[str, CandleData] = {}
-        chunk_size = 5  # Small chunk size to keep memory low
 
-        from datetime import timedelta
         end_exclusive = end + timedelta(days=1)
         start_str = start.strftime("%Y-%m-%d")
         end_str = end_exclusive.strftime("%Y-%m-%d")
 
         import gc
 
-        for i in range(0, len(tickers), chunk_size):
-            chunk = tickers[i : i + chunk_size]
-            
-            @self._make_retry_decorator()
-            def _download_chunk() -> pd.DataFrame:
-                return yf.download(
-                    tickers=chunk,
-                    start=start_str,
-                    end=end_str,
-                    auto_adjust=False,
-                    progress=False,
-                    threads=False,
-                )
-
+        for ticker in tickers:
             try:
-                raw = await asyncio.to_thread(_download_chunk)
-                if raw.empty:
-                    continue
-                    
-                for ticker in chunk:
+                raw = await self._download_one(ticker, start_str, end_str)
+                if raw is not None and not raw.empty:
                     candle = _parse_single_ticker(
                         raw=raw,
                         ticker=ticker,
-                        all_tickers=chunk,
+                        all_tickers=[ticker],
                         as_of=as_of,
                         source=self.name,
                     )
                     if candle is not None:
                         results[ticker] = candle
             except Exception as exc:
-                log.error("yfinance_chunk_failed", chunk=chunk, error=str(exc))
-                
+                log.error("yfinance_single_failed", ticker=ticker, error=str(exc))
+
             # Yield control to event loop and give GC a chance to clear pandas structures
             gc.collect()
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
 
         log.info(
             "candles_fetched",
@@ -198,6 +182,21 @@ class YFinanceProvider:
             fetched=len(results),
         )
         return results
+
+    async def _download_one(self, ticker: str, start_str: str, end_str: str) -> pd.DataFrame | None:
+        """Download data for a single ticker with retries. Runs in a thread."""
+        @self._make_retry_decorator()
+        def _do_download(t: str) -> pd.DataFrame:
+            return yf.download(
+                tickers=t,
+                start=start_str,
+                end=end_str,
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+
+        return await asyncio.to_thread(_do_download, ticker)
 
     async def health_check(self) -> ProviderHealth:
         """Verify yfinance is operational by fetching one row of NIFTY data."""

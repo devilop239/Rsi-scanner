@@ -57,8 +57,22 @@ def get_url() -> str:
     url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./dev.db")
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-    elif url.startswith("postgresql://"):
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    # In development mode, fall back to SQLite if the PostgreSQL host is unreachable
+    env = os.environ.get("ENVIRONMENT", "development")
+    if env == "development" and "asyncpg" in url:
+        import socket
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(url.replace("postgresql+asyncpg://", "postgresql://"))
+            host = parsed.hostname or ""
+            port = parsed.port or 5432
+            socket.getaddrinfo(host, port)
+        except (socket.gaierror, OSError):
+            url = "sqlite+aiosqlite:///./dev.db"
+
     return url
 
 def run_migrations_offline() -> None:
