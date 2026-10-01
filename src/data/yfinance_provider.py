@@ -187,7 +187,7 @@ class YFinanceProvider:
         """Download data for a single ticker with retries. Runs in a thread."""
         @self._make_retry_decorator()
         def _do_download(t: str) -> pd.DataFrame:
-            return yf.download(
+            df = yf.download(
                 tickers=t,
                 start=start_str,
                 end=end_str,
@@ -195,6 +195,9 @@ class YFinanceProvider:
                 progress=False,
                 threads=False,
             )
+            if df.empty:
+                raise RuntimeError(f"yfinance returned empty data for {t}. Check network/DNS or ticker validity.")
+            return df
 
         return await asyncio.to_thread(_do_download, ticker)
 
