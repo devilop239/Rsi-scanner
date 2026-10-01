@@ -56,18 +56,22 @@ def is_trading_day(d: date | None = None) -> bool:
 def last_trading_day(reference: date | None = None) -> date:
     """Return the most recent completed trading day on or before *reference*.
 
-    'Completed' means strictly before today in IST, so an in-progress day
-    is never returned.
+    If reference is not provided, it defaults to today if the current time
+    is after 16:00 IST (market closed), otherwise defaults to yesterday.
 
     Args:
-        reference: Starting point for the search. Defaults to yesterday IST.
+        reference: Starting point for the search.
     """
     import pytz
     from datetime import datetime
 
     if reference is None:
-        today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-        reference = today - timedelta(days=1)
+        now = datetime.now(pytz.timezone("Asia/Kolkata"))
+        # NSE closes at 15:30 IST. EOD data is usually available by 16:00 IST.
+        if now.hour >= 16:
+            reference = now.date()
+        else:
+            reference = now.date() - timedelta(days=1)
 
     candidate = reference
     for _ in range(14):  # Search up to 2 weeks back (handles long holiday runs)

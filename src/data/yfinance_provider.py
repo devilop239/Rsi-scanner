@@ -116,6 +116,7 @@ class YFinanceProvider:
 
     def _make_retry_decorator(self) -> Any:
         """Build a tenacity retry decorator with exponential backoff + jitter."""
+        import logging
         return retry(
             retry=retry_if_exception_type((Exception,)),
             stop=stop_after_attempt(self._max_retries),
@@ -124,7 +125,7 @@ class YFinanceProvider:
                 min=self._min_wait,
                 max=self._max_wait,
             ) + wait_random(0, 2),
-            before_sleep=before_sleep_log(log, log.warning),  # type: ignore[arg-type]
+            before_sleep=before_sleep_log(log, logging.WARNING),
             reraise=True,
         )
 
@@ -187,26 +188,18 @@ class YFinanceProvider:
         """Download data for a single ticker with retries. Runs in a thread."""
         @self._make_retry_decorator()
         def _do_download(t: str) -> pd.DataFrame:
-            import requests
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            })
-            
             try:
+                # Let yfinance use its own dynamically updated session and headers
                 df = yf.download(
                     tickers=t,
-                    period="1y",
+                    start=start_str,
+                    end=end_str,
                     auto_adjust=False,
                     progress=False,
-                    session=session,
+                    threads=False,
                 )
-            except TypeError as exc:
-                if "instances of 'method' and 'int'" in str(exc):
-                    raise RuntimeError(f"yfinance failed to download {t} due to a network/DNS error.")
-                raise
+            except Exception as exc:
+                raise RuntimeError(f"yfinance failed to download {t}: {exc}") from exc
 
             if df.empty:
                 raise RuntimeError(f"yfinance returned empty data for {t}. Check network/DNS or ticker validity.")
