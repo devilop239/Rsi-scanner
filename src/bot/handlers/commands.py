@@ -252,7 +252,33 @@ async def _trigger_scan(db: DatabaseManager, bot: Bot) -> tuple[str, InlineKeybo
 
         alerter = AlerterService(bot=bot, db=db)
         dispatched = await alerter.process_and_send(result)
-        text += f"\n📤 Dispatched: <b>{dispatched}</b>"
+        text += f"\n📤 Dispatched: <b>{dispatched}</b>\n\n"
+
+        if result.signals:
+            text += "<b>📊 ᴅᴇᴛᴇᴄᴛᴇᴅ sɪɢɴᴀʟs:</b>\n\n"
+            for s in result.signals:
+                if s.signal_type == "OVERSOLD":
+                    emoji = "🟢"
+                    action = "OVERSOLD ENTRY"
+                elif s.signal_type == "OVERSOLD_EXIT":
+                    emoji = "🟩"
+                    action = "OVERSOLD EXIT"
+                elif s.signal_type == "OVERBOUGHT":
+                    emoji = "🔴"
+                    action = "OVERBOUGHT ENTRY"
+                else:
+                    emoji = "🟥"
+                    action = "OVERBOUGHT EXIT"
+                
+                text += (
+                    f"• {emoji} <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
+                    f"  └ <b>{action}</b>\n"
+                    f"    ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
+                    f"    ├ ʀsɪ   : {s.rsi:.1f}\n"
+                    f"    ├ %ᴋ    : {s.stoch_k:.1f}\n"
+                    f"    └ %ᴅ    : {s.stoch_d:.1f}\n\n"
+                )
+
         return text, main_menu_keyboard()
 
     except Exception as exc:
@@ -471,15 +497,15 @@ async def cmd_status(message: Message, db: DatabaseManager, state: FSMContext) -
 async def cb_scan(callback: CallbackQuery, db: DatabaseManager, bot: Bot, state: FSMContext) -> None:
     await state.clear()
     try:
-        await callback.message.edit_text("🔍 <i>Initializing market scan...</i>")
-        text, markup = await _trigger_scan(db, bot)
-        await callback.message.edit_text(text, reply_markup=markup)
         await callback.answer()
-    except TelegramBadRequest:
-        await callback.answer("ℹ️ Already displaying.")
+        if callback.message:
+            processing_msg = await callback.message.answer("🔍 <i>Initializing market scan...</i>")
+            text, markup = await _trigger_scan(db, bot)
+            await processing_msg.edit_text(text, reply_markup=markup)
     except Exception as e:
         log.error("cb_scan_error", error=str(e))
-        await callback.answer("❌ Scan failed.", show_alert=True)
+        if callback.message:
+            await callback.message.answer("❌ Scan failed.")
 
 
 @router.callback_query(F.data == "action_oversold")

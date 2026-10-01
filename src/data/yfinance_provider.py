@@ -135,7 +135,7 @@ class YFinanceProvider:
         start: date,
         end: date,
     ) -> dict[str, CandleData]:
-        """Fetch adjusted OHLCV data one ticker at a time to avoid OOM and MultiIndex issues."""
+        """Fetch adjusted OHLCV data for all tickers in a single batch call."""
         if not tickers:
             return {}
 
@@ -154,27 +154,24 @@ class YFinanceProvider:
         start_str = start.strftime("%Y-%m-%d")
         end_str = end_exclusive.strftime("%Y-%m-%d")
 
-        import gc
-
-        for ticker in tickers:
-            try:
-                raw = await self._download_one(ticker, start_str, end_str)
-                if raw is not None and not raw.empty:
-                    candle = _parse_single_ticker(
-                        raw=raw,
-                        ticker=ticker,
-                        all_tickers=[ticker],
-                        as_of=as_of,
-                        source=self.name,
-                    )
-                    if candle is not None:
-                        results[ticker] = candle
-            except Exception as exc:
-                log.error("yfinance_single_failed", ticker=ticker, error=str(exc))
-
-            # Yield control to event loop and give GC a chance to clear pandas structures
-            gc.collect()
-            await asyncio.sleep(0.05)
+        try:
+            raw_batch = await self._download_batch(tickers, start_str, end_str)
+            if raw_batch is not None and not raw_batch.empty:
+                for ticker in tickers:
+                    try:
+                        candle = _parse_single_ticker(
+                            raw=raw_batch,
+                            ticker=ticker,
+                            all_tickers=tickers,
+                            as_of=as_of,
+                            source=self.name,
+                        )
+                        if candle is not None:
+                            results[ticker] = candle
+                    except Exception as exc:
+                        log.error("yfinance_parse_single_failed", ticker=ticker, error=str(exc))
+        except Exception as exc:
+            log.error("yfinance_batch_failed", error=str(exc))
 
         log.info(
             "candles_fetched",
@@ -184,28 +181,28 @@ class YFinanceProvider:
         )
         return results
 
-    async def _download_one(self, ticker: str, start_str: str, end_str: str) -> pd.DataFrame | None:
-        """Download data for a single ticker with retries. Runs in a thread."""
+    async def _download_batch(self, tickers: list[str], start_str: str, end_str: str) -> pd.DataFrame | None:
+        """Download data for multiple tickers with retries. Runs in a thread."""
         @self._make_retry_decorator()
-        def _do_download(t: str) -> pd.DataFrame:
+        def _do_download(t_list: list[str]) -> pd.DataFrame:
             try:
                 # Let yfinance use its own dynamically updated session and headers
                 df = yf.download(
-                    tickers=t,
+                    tickers=t_list,
                     start=start_str,
                     end=end_str,
                     auto_adjust=False,
                     progress=False,
-                    threads=False,
+                    threads=True,
                 )
             except Exception as exc:
-                raise RuntimeError(f"yfinance failed to download {t}: {exc}") from exc
+                raise RuntimeError(f"yfinance failed to download batch: {exc}") from exc
 
             if df.empty:
-                raise RuntimeError(f"yfinance returned empty data for {t}. Check network/DNS or ticker validity.")
+                raise RuntimeError("yfinance returned empty data for batch. Check network/DNS or ticker validity.")
             return df
 
-        return await asyncio.to_thread(_do_download, ticker)
+        return await asyncio.to_thread(_do_download, tickers)
 
     async def health_check(self) -> ProviderHealth:
         """Verify yfinance is operational by fetching one row of NIFTY data."""

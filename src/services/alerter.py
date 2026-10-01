@@ -53,58 +53,62 @@ class AlerterService:
         dispatched = 0
 
         for sub in subscribers:
+            has_custom = sub.custom_stoch_low is not None or sub.custom_stoch_high is not None
             low_thresh = sub.custom_stoch_low if sub.custom_stoch_low is not None else settings.stoch_low
             high_thresh = sub.custom_stoch_high if sub.custom_stoch_high is not None else settings.stoch_high
 
-            async with self._db.session() as session:
-                # Query oversold for this subscriber
-                os_result = await session.execute(
-                    select(IndicatorValue, Symbol, DailyCandle.close)
-                    .join(Symbol, IndicatorValue.symbol_id == Symbol.id)
-                    .outerjoin(DailyCandle, (DailyCandle.symbol_id == Symbol.id) & (DailyCandle.candle_date == scan_result.trading_date))
-                    .where(
-                        IndicatorValue.value_date == scan_result.trading_date,
-                        IndicatorValue.stoch_k < low_thresh
+            if not has_custom:
+                # Use global signals (which correctly calculate entry/exit crosses)
+                oversold = [s for s in scan_result.signals if s.signal_type in ("OVERSOLD", "OVERSOLD_EXIT")]
+                overbought = [s for s in scan_result.signals if s.signal_type in ("OVERBOUGHT", "OVERBOUGHT_EXIT")]
+            else:
+                async with self._db.session() as session:
+                    # Query oversold for this subscriber
+                    os_result = await session.execute(
+                        select(IndicatorValue, Symbol, DailyCandle.close)
+                        .join(Symbol, IndicatorValue.symbol_id == Symbol.id)
+                        .outerjoin(DailyCandle, (DailyCandle.symbol_id == Symbol.id) & (DailyCandle.candle_date == scan_result.trading_date))
+                        .where(
+                            IndicatorValue.value_date == scan_result.trading_date,
+                            IndicatorValue.stoch_k < low_thresh
+                        )
+                        .order_by(IndicatorValue.stoch_k)
                     )
-                    .order_by(IndicatorValue.stoch_k)
-                )
-                os_rows = os_result.all()
+                    os_rows = os_result.all()
 
-                # Query overbought for this subscriber
-                ob_result = await session.execute(
-                    select(IndicatorValue, Symbol, DailyCandle.close)
-                    .join(Symbol, IndicatorValue.symbol_id == Symbol.id)
-                    .outerjoin(DailyCandle, (DailyCandle.symbol_id == Symbol.id) & (DailyCandle.candle_date == scan_result.trading_date))
-                    .where(
-                        IndicatorValue.value_date == scan_result.trading_date,
-                        IndicatorValue.stoch_k > high_thresh
+                    # Query overbought for this subscriber
+                    ob_result = await session.execute(
+                        select(IndicatorValue, Symbol, DailyCandle.close)
+                        .join(Symbol, IndicatorValue.symbol_id == Symbol.id)
+                        .outerjoin(DailyCandle, (DailyCandle.symbol_id == Symbol.id) & (DailyCandle.candle_date == scan_result.trading_date))
+                        .where(
+                            IndicatorValue.value_date == scan_result.trading_date,
+                            IndicatorValue.stoch_k > high_thresh
+                        )
+                        .order_by(IndicatorValue.stoch_k.desc())
                     )
-                    .order_by(IndicatorValue.stoch_k.desc())
-                )
-                ob_rows = ob_result.all()
+                    ob_rows = ob_result.all()
 
-            if not os_rows and not ob_rows:
+                # Convert to SignalRecord format for the formatter
+                oversold = [
+                    SignalRecord(
+                        ticker=sym.ticker, company_name=sym.company_name, signal_type="OVERSOLD",
+                        stoch_k=iv.stoch_k, stoch_d=iv.stoch_d or 0, rsi=iv.rsi,
+                        close=close_price if close_price is not None else 0.0, trading_date=iv.value_date
+                    ) for iv, sym, close_price in os_rows if iv.stoch_k is not None
+                ]
+                
+                overbought = [
+                    SignalRecord(
+                        ticker=sym.ticker, company_name=sym.company_name, signal_type="OVERBOUGHT",
+                        stoch_k=iv.stoch_k, stoch_d=iv.stoch_d or 0, rsi=iv.rsi,
+                        close=close_price if close_price is not None else 0.0, trading_date=iv.value_date
+                    ) for iv, sym, close_price in ob_rows if iv.stoch_k is not None
+                ]
+
+            if not oversold and not overbought:
                 continue
 
-            # Convert to SignalRecord format for the formatter
-            oversold = [
-                SignalRecord(
-                    ticker=sym.ticker, company_name=sym.company_name, signal_type="OVERSOLD",
-                    stoch_k=iv.stoch_k, stoch_d=iv.stoch_d or 0, rsi=iv.rsi,
-                    close=close_price if close_price is not None else 0.0, trading_date=iv.value_date
-                ) for iv, sym, close_price in os_rows if iv.stoch_k is not None
-            ]
-            
-            overbought = [
-                SignalRecord(
-                    ticker=sym.ticker, company_name=sym.company_name, signal_type="OVERBOUGHT",
-                    stoch_k=iv.stoch_k, stoch_d=iv.stoch_d or 0, rsi=iv.rsi,
-                    close=close_price if close_price is not None else 0.0, trading_date=iv.value_date
-                ) for iv, sym, close_price in ob_rows if iv.stoch_k is not None
-            ]
-
-            # Dedup check could go here if we tracked per-user, but we'll bypass it for custom limits
-            
             # Send HTML document for all scans to provide a clean dashboard
             if len(oversold) + len(overbought) > 0:
                 from src.services.reporter import generate_html_report
@@ -208,9 +212,15 @@ class AlerterService:
         date_str = trading_date.strftime("%d %b %Y")
         lines.append(f"🚨 <b>ᴍᴀʀᴋᴇᴛ ᴀʟᴇʀᴛ</b>\n<i>{date_str}</i>\n\n")
 
-        if oversold:
-            lines.append(f"🟢 <b>ᴏᴠᴇʀsᴏʟᴅ ᴢᴏɴᴇ</b>  (StochRSI &lt; {low_thresh})\n")
-            for s in oversold:
+        os_entry = [s for s in oversold if s.signal_type == "OVERSOLD"]
+        os_exit = [s for s in oversold if s.signal_type == "OVERSOLD_EXIT"]
+        
+        ob_entry = [s for s in overbought if s.signal_type == "OVERBOUGHT"]
+        ob_exit = [s for s in overbought if s.signal_type == "OVERBOUGHT_EXIT"]
+
+        if os_entry:
+            lines.append(f"🟢 <b>ᴏᴠᴇʀsᴏʟᴅ ᴇɴᴛʀʏ</b>  (StochRSI crossed below {low_thresh})\n")
+            for s in os_entry:
                 lines.append(
                     f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
                     f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
@@ -219,11 +229,35 @@ class AlerterService:
                 )
             lines.append("\n")
 
-        if overbought:
-            if oversold:
+        if os_exit:
+            lines.append(f"🟩 <b>ᴏᴠᴇʀsᴏʟᴅ ᴇxɪᴛ</b>  (StochRSI crossed above {low_thresh})\n")
+            for s in os_exit:
+                lines.append(
+                    f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
+                    f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
+                    f"  ├ ʀsɪ : {s.rsi:.1f}\n"
+                    f"  └ sᴛᴏᴄʜ : <b>{s.stoch_k:.1f}</b>\n"
+                )
+            lines.append("\n")
+
+        if ob_entry:
+            if os_entry or os_exit:
                 lines.append("─" * 25 + "\n\n")
-            lines.append(f"🔴 <b>ᴏᴠᴇʀʙᴏᴜɢʜᴛ ᴢᴏɴᴇ</b>  (StochRSI &gt; {high_thresh})\n")
-            for s in overbought:
+            lines.append(f"🔴 <b>ᴏᴠᴇʀʙᴏᴜɢʜᴛ ᴇɴᴛʀʏ</b>  (StochRSI crossed above {high_thresh})\n")
+            for s in ob_entry:
+                lines.append(
+                    f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
+                    f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
+                    f"  ├ ʀsɪ : {s.rsi:.1f}\n"
+                    f"  └ sᴛᴏᴄʜ : <b>{s.stoch_k:.1f}</b>\n"
+                )
+            lines.append("\n")
+
+        if ob_exit:
+            if os_entry or os_exit or ob_entry:
+                lines.append("─" * 25 + "\n\n")
+            lines.append(f"🟥 <b>ᴏᴠᴇʀʙᴏᴜɢʜᴛ ᴇxɪᴛ</b>  (StochRSI crossed below {high_thresh})\n")
+            for s in ob_exit:
                 lines.append(
                     f"• <code>{s.ticker.replace('.NS', '')}</code> — <b>{s.company_name[:25]}</b>\n"
                     f"  ├ ᴘʀɪᴄᴇ : ₹{s.close:,.2f}\n"
@@ -233,7 +267,7 @@ class AlerterService:
             lines.append("\n")
 
         disclaimer = (
-            "<i>⚠️ ᴛʀᴀᴅᴇ sᴇᴛᴜᴘs ᴅᴇᴛᴇᴄᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ. ᴅᴏ ʏᴏᴜʀ ᴏᴡɴ ʀᴇsᴇᴀʀᴄʜ.</i>"
+            "<i>⚠️ This alert is for informational purposes only and does not constitute investment advice.</i>"
         )
         lines.append(disclaimer)
 

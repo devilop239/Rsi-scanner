@@ -203,10 +203,11 @@ def classify_signal(
     low_threshold: float = 20.0,
     high_threshold: float = 80.0,
     use_d: bool = False,
+    alert_on_exit: bool = False,
 ) -> str | None:
-    """Classify whether StochRSI just *crossed into* an extreme zone.
+    """Classify whether StochRSI just *crossed into* or *out of* an extreme zone.
 
-    Only fires on the **entry cross**, not on sustained membership, to prevent
+    Only fires on the **entry cross** (or **exit cross** if enabled), not on sustained membership, to prevent
     repeated alerts when a stock stays oversold/overbought for weeks.
 
     Args:
@@ -217,19 +218,28 @@ def classify_signal(
         low_threshold:  Oversold threshold (default 20).
         high_threshold: Overbought threshold (default 80).
         use_d:          If True, compare %D against thresholds (False → %K).
+        alert_on_exit:  If True, also detects crosses out of extreme zones.
 
     Returns:
-        ``"OVERSOLD"``, ``"OVERBOUGHT"``, or ``None``.
+        ``"OVERSOLD"``, ``"OVERBOUGHT"``, ``"OVERSOLD_EXIT"``, ``"OVERBOUGHT_EXIT"`` or ``None``.
     """
     curr = d if use_d else k
     prev = prev_d if use_d else prev_k
 
-    if curr is None:
+    if curr is None or prev is None:
         return None
 
-    # Level-based detection: fire whenever the threshold is breached
-    if curr < low_threshold:
+    # Entry crosses
+    if prev >= low_threshold and curr < low_threshold:
         return "OVERSOLD"
-    if curr > high_threshold:
+    if prev <= high_threshold and curr > high_threshold:
         return "OVERBOUGHT"
+
+    # Exit crosses
+    if alert_on_exit:
+        if prev < low_threshold and curr >= low_threshold:
+            return "OVERSOLD_EXIT"
+        if prev > high_threshold and curr <= high_threshold:
+            return "OVERBOUGHT_EXIT"
+
     return None

@@ -264,6 +264,7 @@ class ScannerService:
                     low_threshold=settings.stoch_low,
                     high_threshold=settings.stoch_high,
                     use_d=use_d,
+                    alert_on_exit=settings.alert_on_exit,
                 )
 
                 if signal_type_str:
@@ -311,6 +312,10 @@ class ScannerService:
 
         if df.empty:
             return None
+
+        # Ensure index is timezone-naive for comparison
+        if getattr(df.index, "tz", None) is not None:
+            df.index = df.index.tz_localize(None)
 
         # Only save the most recent row for the trading date
         row = df[df.index.date == trading_date]  # type: ignore[attr-defined]
