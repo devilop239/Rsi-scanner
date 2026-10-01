@@ -54,8 +54,12 @@ def get_url() -> str:
                     key, _, value = line.partition("=")
                     os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
-    return os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./dev.db")
-
+    url = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./dev.db")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode (no DB connection needed, emit SQL)."""
