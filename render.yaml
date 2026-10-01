@@ -6,6 +6,8 @@ services:
     startCommand: "python src/main.py"
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: ENVIRONMENT
         value: production
       - key: BOT_TOKEN
@@ -45,6 +47,8 @@ services:
       print(json.loads(res.read()))
       "
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: CRON_SECRET
         fromService:
           name: nifty-stoch-rsi
