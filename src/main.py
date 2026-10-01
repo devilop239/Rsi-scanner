@@ -148,10 +148,12 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", settings.port))
     uvicorn.run(
         "src.main:app",
         host=settings.host,
-        port=settings.port,
+        port=port,
         reload=not settings.is_production,
         log_level=settings.log_level.lower(),
     )
