@@ -316,7 +316,7 @@ constitute investment advice. Always do your own research.
 cd "Nifity 50 project"
 
 # 2. Create a virtual environment
-python -m venv .venv
+python3 -m venv .venv
 .venv\Scripts\Activate.ps1        # Windows PowerShell
 # source .venv/bin/activate        # Linux / macOS
 

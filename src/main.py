@@ -18,7 +18,7 @@ from typing import AsyncGenerator
 # Ensure project root is on sys.path when running `python src/main.py`
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+    sys.path.append(str(project_root))
 
 import uvicorn
 from fastapi import FastAPI
