@@ -47,51 +47,6 @@ _COLUMN_MAP = {
 }
 
 
-def _yf_download_sync(
-    tickers: list[str],
-    start: date,
-    end: date,
-) -> pd.DataFrame:
-    """Blocking yfinance download — called inside asyncio.to_thread.
-
-    Downloads in chunks of 15 tickers with threads=False to avoid
-    Yahoo Finance connection pool exhaustion and rate limiting.
-    The end date is made exclusive (+1 day) per yfinance convention.
-    """
-    from datetime import timedelta
-
-    end_exclusive = end + timedelta(days=1)
-    start_str = start.strftime("%Y-%m-%d")
-    end_str = end_exclusive.strftime("%Y-%m-%d")
-
-    chunk_size = 15
-    dfs: list[pd.DataFrame] = []
-
-    for i in range(0, len(tickers), chunk_size):
-        chunk = tickers[i : i + chunk_size]
-        try:
-            df_chunk = yf.download(
-                tickers=chunk,
-                start=start.strftime("%Y-%m-%d"),
-                end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-            if not df_chunk.empty:
-                dfs.append(df_chunk)
-        except Exception as exc:
-            log.warning("yf_chunk_download_failed", chunk=chunk[:3], error=str(exc))
-
-    if not dfs:
-        return pd.DataFrame()
-
-    if len(dfs) == 1:
-        return dfs[0]
-
-    return pd.concat(dfs, axis=1)
-
-
 def _parse_single_ticker(
     raw: pd.DataFrame,
     ticker: str,
@@ -107,10 +62,8 @@ def _parse_single_ticker(
             elif ticker in raw.columns.get_level_values(1):
                 df = raw.xs(ticker, level=1, axis=1).copy()
             else:
-                log.warning("ticker_missing_from_multiindex", ticker=ticker, levels=[raw.columns.get_level_values(0).unique().tolist()[:3], raw.columns.get_level_values(1).unique().tolist()[:3]])
                 return None
         else:
-            log.warning("raw_columns_not_multiindex", ticker=ticker, columns=list(raw.columns))
             df = raw.copy()
 
         # Rename to canonical column names
@@ -131,7 +84,6 @@ def _parse_single_ticker(
             df = df[df["adj_close"].notna()]
 
         if df.empty:
-            log.warning("empty_dataframe_after_cleaning", ticker=ticker, present_columns=present)
             return None
 
         # Ensure ascending date order
@@ -146,11 +98,7 @@ def _parse_single_ticker(
 
 
 class YFinanceProvider:
-    """MarketDataProvider backed by yfinance.
-
-    Implements the MarketDataProvider Protocol via duck typing (no explicit
-    ABC inheritance so there's no framework dependency in the data layer).
-    """
+    """MarketDataProvider backed by yfinance."""
 
     name: str = "yfinance"
 
@@ -173,7 +121,7 @@ class YFinanceProvider:
                 multiplier=1,
                 min=self._min_wait,
                 max=self._max_wait,
-            ) + wait_random(0, 2),  # Jitter to avoid thundering herd
+            ) + wait_random(0, 2),
             before_sleep=before_sleep_log(log, log.warning),  # type: ignore[arg-type]
             reraise=True,
         )
@@ -184,20 +132,7 @@ class YFinanceProvider:
         start: date,
         end: date,
     ) -> dict[str, CandleData]:
-        """Fetch adjusted OHLCV data for all tickers in one batch call.
-
-        Retries up to max_retries times with exponential backoff.
-        Returns only successfully parsed tickers; failures are logged and skipped.
-
-        Args:
-            tickers: List of yfinance ticker symbols (must include .NS suffix).
-            start:   Start date (inclusive).
-            end:     End date (inclusive). The current in-progress day is
-                     excluded because the caller passes yesterday's date.
-
-        Returns:
-            Dict mapping ticker symbol → CandleData for successfully fetched tickers.
-        """
+        """Fetch adjusted OHLCV data for all tickers in smaller chunks to avoid OOM."""
         if not tickers:
             return {}
 
@@ -210,39 +145,51 @@ class YFinanceProvider:
         )
 
         as_of = date.today()
-
-        @self._make_retry_decorator()
-        def _download() -> pd.DataFrame:
-            return _yf_download_sync(tickers, start, end)
-
-        try:
-            raw = await asyncio.to_thread(_download)
-        except RetryError as exc:
-            log.error(
-                "yfinance_batch_failed_after_retries",
-                tickers=tickers[:5],
-                error=str(exc),
-            )
-            return {}
-        except Exception as exc:
-            log.error("yfinance_unexpected_error", error=str(exc))
-            return {}
-
-        if raw.empty:
-            log.warning("yfinance_returned_empty_dataframe", tickers=tickers[:5])
-            return {}
-
         results: dict[str, CandleData] = {}
-        for ticker in tickers:
-            candle = _parse_single_ticker(
-                raw=raw,
-                ticker=ticker,
-                all_tickers=tickers,
-                as_of=as_of,
-                source=self.name,
-            )
-            if candle is not None:
-                results[ticker] = candle
+        chunk_size = 5  # Small chunk size to keep memory low
+
+        from datetime import timedelta
+        end_exclusive = end + timedelta(days=1)
+        start_str = start.strftime("%Y-%m-%d")
+        end_str = end_exclusive.strftime("%Y-%m-%d")
+
+        import gc
+
+        for i in range(0, len(tickers), chunk_size):
+            chunk = tickers[i : i + chunk_size]
+            
+            @self._make_retry_decorator()
+            def _download_chunk() -> pd.DataFrame:
+                return yf.download(
+                    tickers=chunk,
+                    start=start_str,
+                    end=end_str,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+
+            try:
+                raw = await asyncio.to_thread(_download_chunk)
+                if raw.empty:
+                    continue
+                    
+                for ticker in chunk:
+                    candle = _parse_single_ticker(
+                        raw=raw,
+                        ticker=ticker,
+                        all_tickers=chunk,
+                        as_of=as_of,
+                        source=self.name,
+                    )
+                    if candle is not None:
+                        results[ticker] = candle
+            except Exception as exc:
+                log.error("yfinance_chunk_failed", chunk=chunk, error=str(exc))
+                
+            # Yield control to event loop and give GC a chance to clear pandas structures
+            gc.collect()
+            await asyncio.sleep(0.1)
 
         log.info(
             "candles_fetched",
