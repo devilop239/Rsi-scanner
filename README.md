@@ -5,7 +5,7 @@
 **An automated, production-grade service that monitors all 50 Nifty constituents daily,
 computes Stochastic RSI, and delivers real-time Telegram alerts for oversold and overbought stocks.**
 
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![aiogram 3.x](https://img.shields.io/badge/aiogram-3.31-2CA5E0?logo=telegram&logoColor=white)](https://docs.aiogram.dev)
 [![SQLAlchemy 2.x](https://img.shields.io/badge/SQLAlchemy-2.1-D71F00?logo=sqlalchemy&logoColor=white)](https://sqlalchemy.org)
@@ -208,7 +208,7 @@ nifty-stoch-rsi/
 │   ├── test_data/               ← Provider tests (mocked network)
 │   └── test_services/           ← Scanner + alerter tests
 │
-├── alembic/
+├── db_migrations/
 │   ├── versions/
 │   │   └── 0001_initial_schema.py
 │   └── env.py                   ← Async-compatible Alembic setup
@@ -306,7 +306,7 @@ constitute investment advice. Always do your own research.
 
 ### Prerequisites
 
-- Python 3.11 or 3.12
+- Python 3.10+ (Tested on 3.10, 3.11, 3.12)
 - A Telegram bot token (see [Telegram Bot Setup](#telegram-bot-setup))
 
 ### Step-by-Step
