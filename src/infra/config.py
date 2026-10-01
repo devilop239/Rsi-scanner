@@ -155,9 +155,12 @@ class Settings(BaseSettings):
     @field_validator("database_url", mode="after")
     @classmethod
     def fix_postgres_scheme(cls, v: str) -> str:
-        """Fix Render's postgres:// to postgresql+asyncpg:// for SQLAlchemy."""
-        if v and v.startswith("postgres://"):
-            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        """Fix Render's postgres:// or postgresql:// to postgresql+asyncpg:// for SQLAlchemy."""
+        if v:
+            if v.startswith("postgres://"):
+                return v.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif v.startswith("postgresql://"):
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
     @property
