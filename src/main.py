@@ -149,11 +149,13 @@ app = create_app()
 
 if __name__ == "__main__":
     import os
-    port = int(os.environ.get("PORT", settings.port))
+    # Render automatically sets the PORT environment variable
+    port = int(os.environ.get("PORT", 8000))
+    
     uvicorn.run(
         "src.main:app",
-        host=settings.host,
+        host="0.0.0.0",
         port=port,
-        reload=not settings.is_production,
-        log_level=settings.log_level.lower(),
+        reload=False,  # CRITICAL: Must be False on Render to avoid Out of Memory (512MB limit)
+        log_level="info",
     )
