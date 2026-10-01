@@ -187,17 +187,24 @@ class YFinanceProvider:
         """Download data for a single ticker with retries. Runs in a thread."""
         @self._make_retry_decorator()
         def _do_download(t: str) -> pd.DataFrame:
+            import requests
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            })
+            
             try:
                 df = yf.download(
                     tickers=t,
                     period="1y",
                     auto_adjust=False,
                     progress=False,
+                    session=session,
                 )
             except TypeError as exc:
                 if "instances of 'method' and 'int'" in str(exc):
-                    # This is a known bug in yfinance when it tries to log a network failure.
-                    # It creates an empty df and does `if df.count < 1:` instead of `df.count() < 1`.
                     raise RuntimeError(f"yfinance failed to download {t} due to a network/DNS error.")
                 raise
 
