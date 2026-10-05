@@ -63,8 +63,12 @@ def _parse_single_ticker(
             elif ticker in raw.columns.get_level_values(1):
                 df = raw.xs(ticker, level=1, axis=1).copy()
             else:
+                log.warning("ticker_not_in_multiindex", ticker=ticker, levels=[list(raw.columns.levels[i]) for i in range(raw.columns.nlevels)])
                 return None
         else:
+            if ticker not in raw.columns and len(all_tickers) > 1:
+                log.warning("ticker_not_in_singleindex", ticker=ticker, columns=list(raw.columns))
+                return None
             df = raw.copy()
 
         # Rename to canonical column names
@@ -93,6 +97,7 @@ def _parse_single_ticker(
             df = df[df["adj_close"].notna()]
 
         if df.empty:
+            log.warning("ticker_df_empty_after_clean", ticker=ticker, original_columns=list(raw.columns) if not isinstance(raw.columns, pd.MultiIndex) else "multi")
             return None
 
         # Ensure ascending date order
@@ -120,6 +125,18 @@ class YFinanceProvider:
         self._max_retries = max_retries
         self._min_wait = min_wait_seconds
         self._max_wait = max_wait_seconds
+
+        # Configure custom session to avoid rate limits and connection pool exhaustion
+        self._session = requests.Session()
+        self._session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+        })
+        # Set pool size > 50 (since we fetch ~50 tickers with threads=True)
+        adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=1)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     def _make_retry_decorator(self) -> Any:
         """Build a tenacity retry decorator with exponential backoff + jitter."""
@@ -197,17 +214,16 @@ class YFinanceProvider:
         @self._make_retry_decorator()
         def _do_download(t_list: list[str]) -> pd.DataFrame:
             try:
-                # auto_adjust=True: yfinance adjusts OHLCV for splits/dividends and
-                # merges "Adj Close" into "Close". We map "Close" → both close & adj_close.
-                # This avoids the separate "Adj Close" column that newer yfinance versions
-                # may not reliably return.
+                # We use auto_adjust=False as it provides the most stable multi-ticker
+                # column format in yfinance 0.2.5x.
                 df = yf.download(
                     tickers=t_list,
                     start=start_str,
                     end=end_str,
-                    auto_adjust=True,
+                    auto_adjust=False,
                     progress=False,
                     threads=True,
+                    session=self._session,
                 )
             except Exception as exc:
                 raise RuntimeError(f"yfinance failed to download batch: {exc}") from exc
