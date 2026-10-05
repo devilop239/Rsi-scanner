@@ -33,10 +33,9 @@ from src.infra.logging import get_logger
 
 log = get_logger(__name__)
 
-# Columns yfinance returns in the raw multi-ticker download DataFrame
-_YFINANCE_COLUMNS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
-
 # Internal column name mapping → our canonical names
+# Supports both auto_adjust=True (no "Adj Close" column; Close IS adjusted)
+# and auto_adjust=False (separate "Adj Close" column) yfinance modes.
 _COLUMN_MAP = {
     "Open": "open",
     "High": "high",
@@ -70,9 +69,17 @@ def _parse_single_ticker(
 
         # Rename to canonical column names
         df = df.rename(columns=_COLUMN_MAP)
-        df.index = pd.to_datetime(df.index).normalize()  # Ensure date-only
 
-        # Fallback if yfinance drops Adj Close
+        # Normalize index to timezone-naive (date-only) timestamps.
+        # yfinance returns a tz-aware UTC DatetimeIndex. Use tz_convert then
+        # tz_localize(None) — calling tz_localize(None) directly on a tz-aware
+        # index raises TypeError.
+        if getattr(df.index, "tz", None) is not None:
+            df.index = df.index.tz_convert("UTC").tz_localize(None)
+        df.index = pd.to_datetime(df.index).normalize()  # Ensure date-only (midnight)
+
+        # When auto_adjust=True, yfinance has no separate "Adj Close" column;
+        # "close" is already split/dividend-adjusted. Mirror it to adj_close.
         if "adj_close" not in df.columns and "close" in df.columns:
             df["adj_close"] = df["close"]
 
@@ -147,9 +154,13 @@ class YFinanceProvider:
             end=end.isoformat(),
         )
 
-        as_of = date.today()
+        # Use IST date as the canonical "as_of" date to match market calendar
+        import pytz
+        from datetime import datetime as _dt
+        as_of = _dt.now(pytz.timezone("Asia/Kolkata")).date()
         results: dict[str, CandleData] = {}
 
+        # yfinance end date is EXCLUSIVE: add 1 day to include the target trading day
         end_exclusive = end + timedelta(days=1)
         start_str = start.strftime("%Y-%m-%d")
         end_str = end_exclusive.strftime("%Y-%m-%d")
@@ -186,12 +197,15 @@ class YFinanceProvider:
         @self._make_retry_decorator()
         def _do_download(t_list: list[str]) -> pd.DataFrame:
             try:
-                # Let yfinance use its own dynamically updated session and headers
+                # auto_adjust=True: yfinance adjusts OHLCV for splits/dividends and
+                # merges "Adj Close" into "Close". We map "Close" → both close & adj_close.
+                # This avoids the separate "Adj Close" column that newer yfinance versions
+                # may not reliably return.
                 df = yf.download(
                     tickers=t_list,
                     start=start_str,
                     end=end_str,
-                    auto_adjust=False,
+                    auto_adjust=True,
                     progress=False,
                     threads=True,
                 )

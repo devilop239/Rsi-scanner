@@ -99,8 +99,11 @@ class ScannerService:
         started_at = datetime.now(timezone.utc)
         trading_date = last_trading_day()
 
-        if trading_date > date.today():
-            log.error("trading_date_in_future", trading_date=str(trading_date), today=str(date.today()))
+        # Guard against future dates — use IST to match market calendar
+        import pytz as _pytz
+        today_ist = datetime.now(_pytz.timezone("Asia/Kolkata")).date()
+        if trading_date > today_ist:
+            log.error("trading_date_in_future", trading_date=str(trading_date), today_ist=str(today_ist))
             raise ValueError(f"Trading date {trading_date} is in the future. Check server NTP sync.")
 
         # ── Idempotency: don't re-run for the same trading date ──────────────
@@ -313,9 +316,11 @@ class ScannerService:
         if df.empty:
             return None
 
-        # Ensure index is timezone-naive for comparison
+        # Normalize index to timezone-naive (midnight) timestamps.
+        # Use tz_convert first to avoid TypeError on already tz-aware DatetimeIndex.
         if getattr(df.index, "tz", None) is not None:
-            df.index = df.index.tz_localize(None)
+            df.index = df.index.tz_convert("UTC").tz_localize(None)
+        df.index = pd.to_datetime(df.index).normalize()
 
         # Only save the most recent row for the trading date
         row = df[df.index.date == trading_date]  # type: ignore[attr-defined]

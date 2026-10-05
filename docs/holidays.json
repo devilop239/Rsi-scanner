@@ -1,7 +1,7 @@
 {
   "market": "NSE",
   "timezone": "Asia/Kolkata",
-  "updated": "2025-01-01",
+  "updated": "2026-10-05",
   "note": "Update this file annually. See docs/runbook.md for procedure.",
   "holidays": [
     {"date": "2025-01-26", "description": "Republic Day"},
@@ -19,12 +19,17 @@
     {"date": "2025-11-05", "description": "Prakash Gurpurab Sri Guru Nanak Dev Ji"},
     {"date": "2025-12-25", "description": "Christmas"},
     {"date": "2026-01-26", "description": "Republic Day"},
-    {"date": "2026-03-20", "description": "Holi"},
+    {"date": "2026-02-17", "description": "Mahashivratri"},
+    {"date": "2026-03-20", "description": "Holi / Id-Ul-Fitr (Ramzan Eid)"},
     {"date": "2026-04-03", "description": "Good Friday"},
+    {"date": "2026-04-14", "description": "Dr. Baba Saheb Ambedkar Jayanti"},
     {"date": "2026-05-01", "description": "Maharashtra Day"},
     {"date": "2026-08-15", "description": "Independence Day"},
     {"date": "2026-10-02", "description": "Mahatma Gandhi Jayanti"},
+    {"date": "2026-10-19", "description": "Dussehra (Vijaya Dashami)"},
     {"date": "2026-11-09", "description": "Guru Nanak Jayanti"},
+    {"date": "2026-11-10", "description": "Diwali - Laxmi Puja"},
+    {"date": "2026-11-11", "description": "Diwali - Balipratipada"},
     {"date": "2026-12-25", "description": "Christmas"}
   ]
 }

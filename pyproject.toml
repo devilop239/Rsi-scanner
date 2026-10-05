@@ -13,7 +13,7 @@ authors = [{ name = "Shivam" }]
 
 dependencies = [
     # Web framework
-    "fastapi>=0.115.0",
+    "fastapi>=0.142.2",
     "uvicorn[standard]>=0.34.0",
 
     # Telegram Bot

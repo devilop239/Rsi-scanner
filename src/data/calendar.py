@@ -57,7 +57,8 @@ def last_trading_day(reference: date | None = None) -> date:
     """Return the most recent completed trading day on or before *reference*.
 
     If reference is not provided, it defaults to today if the current time
-    is after 16:00 IST (market closed), otherwise defaults to yesterday.
+    is after 15:45 IST (market closed + ~15 min for EOD data), otherwise
+    defaults to yesterday.
 
     Args:
         reference: Starting point for the search.
@@ -67,8 +68,10 @@ def last_trading_day(reference: date | None = None) -> date:
 
     if reference is None:
         now = datetime.now(pytz.timezone("Asia/Kolkata"))
-        # NSE closes at 15:30 IST. EOD data is usually available by 16:00 IST.
-        if now.hour >= 16:
+        # NSE closes at 15:30 IST. EOD data is usually available by 15:45 IST.
+        # Use today if we're past 15:45; otherwise use yesterday to avoid
+        # fetching incomplete intraday data.
+        if now.hour > 15 or (now.hour == 15 and now.minute >= 45):
             reference = now.date()
         else:
             reference = now.date() - timedelta(days=1)

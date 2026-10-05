@@ -6,6 +6,9 @@ Uses aiogram 3.x patterns: Router, FSM States, CallbackData, ButtonStyle.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import pytz
+
+_IST = pytz.timezone("Asia/Kolkata")
 
 from aiogram import Bot, Router, F
 from aiogram.enums import ButtonStyle
@@ -148,6 +151,36 @@ async def _load_settings_data(db: DatabaseManager, user_id: int):
     return sub, low_thresh, high_thresh
 
 
+def _fmt_ist(dt: datetime | None) -> str:
+    """Format a UTC datetime as a human-readable IST string."""
+    if dt is None:
+        return "N/A"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist_dt = dt.astimezone(_IST)
+    return ist_dt.strftime("%d %b %Y, %I:%M %p IST")
+
+
+def _build_last_run_text(last_run) -> str:
+    """Build formatted scan run status text with IST timestamps."""
+    if last_run is None:
+        return "No scans have run yet."
+    duration = f"{last_run.duration_ms / 1000:.1f}s" if last_run.duration_ms else "N/A"
+    status_emoji = {"SUCCESS": "✅", "FAILED": "❌", "RUNNING": "⏳", "SKIPPED": "⏭"}.get(
+        last_run.status.value, "❓"
+    )
+    trading_date_str = last_run.trading_date.strftime("%d %b %Y") if last_run.trading_date else "N/A"
+    ran_at_str = _fmt_ist(last_run.completed_at or last_run.started_at)
+    return (
+        f"{status_emoji} <b>{last_run.status.value}</b>\n"
+        f"Trading Date: <i>{trading_date_str}</i>\n"
+        f"Ran At: <i>{ran_at_str}</i>\n"
+        f"Processed: <b>{last_run.items_processed}</b> | Failed: <b>{last_run.items_failed}</b> "
+        f"| Signals: <b>{last_run.signals_found}</b>\n"
+        f"Duration: <b>{duration}</b>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # /start
 # ---------------------------------------------------------------------------
@@ -236,14 +269,18 @@ async def _trigger_scan(db: DatabaseManager, bot: Bot) -> tuple[str, InlineKeybo
         result = await scanner.run_scan(force=True)
 
         if result.was_skipped:
+            trading_date_str = result.trading_date.strftime('%d %b %Y')
             return (
-                "ℹ️ <b>sᴄᴀɴ ᴄᴏᴍᴘʟᴇᴛᴇ</b>\n\n"
-                "<blockquote>Market data is already up-to-date for today. Use the menu below to view the latest signals.</blockquote>",
+                f"ℹ️ <b>sᴄᴀɴ ᴄᴏᴍᴘʟᴇᴛᴇ</b>\n\n"
+                f"<blockquote>Market data for <b>{trading_date_str}</b> is already up-to-date. "
+                f"Use the menu below to view the latest signals.</blockquote>",
                 main_menu_keyboard()
             )
 
+        scanned_at_ist = _fmt_ist(datetime.now(timezone.utc))
         text = (
-            f"✅ <b>ᴍᴀʀᴋᴇᴛ sᴄᴀɴ sᴜᴄᴄᴇss</b> — {result.trading_date.strftime('%d %b %Y')}\n\n"
+            f"✅ <b>ᴍᴀʀᴋᴇᴛ sᴄᴀɴ sᴜᴄᴄᴇss</b> — {result.trading_date.strftime('%d %b %Y')}\n"
+            f"<i>🕐 Scanned at: {scanned_at_ist}</i>\n\n"
             "<blockquote>Scan completed successfully. Alerts have been dispatched to all active subscribers.</blockquote>\n\n"
             f"📈 Processed: <b>{result.processed}</b> stocks\n"
             f"🚨 Signals: <b>{len(result.signals)}</b> found\n"
@@ -464,25 +501,15 @@ async def cmd_status(message: Message, db: DatabaseManager, state: FSMContext) -
         sub_count = len(sub_result.scalars().all())
 
     trading_day_status = "🟢 ᴏɴʟɪɴᴇ" if is_trading_day() else "🔴 ᴏꜰꜰʟɪɴᴇ (Weekend/Holiday)"
-
-    if last_run:
-        duration = f"{last_run.duration_ms / 1000:.1f}s" if last_run.duration_ms else "N/A"
-        status_emoji = {"SUCCESS": "✅", "FAILED": "❌", "RUNNING": "⏳", "SKIPPED": "⏭"}.get(last_run.status.value, "❓")
-        last_run_text = (
-            f"{status_emoji} <b>{last_run.status.value}</b>\n"
-            f"Date: <i>{last_run.trading_date}</i>\n"
-            f"Processed: <b>{last_run.items_processed}</b> | Failed: <b>{last_run.items_failed}</b>\n"
-            f"Duration: <b>{duration}</b>"
-        )
-    else:
-        last_run_text = "No scans have run yet."
+    now_ist = _fmt_ist(datetime.now(timezone.utc))
 
     await message.answer(
         "📡 <b>sʏsᴛᴇᴍ ᴅɪᴀɢɴᴏsᴛɪᴄs</b>\n\n"
         "<blockquote>Real-time metrics and health status of the scanner service.</blockquote>\n\n"
+        f"🕐 Server Time: <code>{now_ist}</code>\n"
         f"Market Status: <b>{trading_day_status}</b>\n\n"
         "<b>ʟᴀsᴛ ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴄᴀɴ:</b>\n"
-        f"<blockquote>{last_run_text}</blockquote>\n"
+        f"<blockquote>{_build_last_run_text(last_run)}</blockquote>\n"
         f"👥 Active Subscribers: <code>{sub_count}</code>\n"
         f"⚙️ Environment: <code>{settings.environment.upper()}</code>",
         reply_markup=main_menu_keyboard()
@@ -549,25 +576,15 @@ async def cb_status(callback: CallbackQuery, db: DatabaseManager, state: FSMCont
             sub_count = len(sub_result.scalars().all())
 
         trading_day_status = "🟢 ᴏɴʟɪɴᴇ" if is_trading_day() else "🔴 ᴏꜰꜰʟɪɴᴇ (Weekend/Holiday)"
-
-        if last_run:
-            duration = f"{last_run.duration_ms / 1000:.1f}s" if last_run.duration_ms else "N/A"
-            status_emoji = {"SUCCESS": "✅", "FAILED": "❌", "RUNNING": "⏳", "SKIPPED": "⏭"}.get(last_run.status.value, "❓")
-            last_run_text = (
-                f"{status_emoji} <b>{last_run.status.value}</b>\n"
-                f"Date: <i>{last_run.trading_date}</i>\n"
-                f"Processed: <b>{last_run.items_processed}</b> | Failed: <b>{last_run.items_failed}</b>\n"
-                f"Duration: <b>{duration}</b>"
-            )
-        else:
-            last_run_text = "No scans have run yet."
+        now_ist = _fmt_ist(datetime.now(timezone.utc))
 
         text = (
             "📡 <b>sʏsᴛᴇᴍ ᴅɪᴀɢɴᴏsᴛɪᴄs</b>\n\n"
             "<blockquote>Real-time metrics and health status of the scanner service.</blockquote>\n\n"
+            f"🕐 Server Time: <code>{now_ist}</code>\n"
             f"Market Status: <b>{trading_day_status}</b>\n\n"
             "<b>ʟᴀsᴛ ᴀᴜᴛᴏᴍᴀᴛᴇᴅ sᴄᴀɴ:</b>\n"
-            f"<blockquote>{last_run_text}</blockquote>\n"
+            f"<blockquote>{_build_last_run_text(last_run)}</blockquote>\n"
             f"👥 Active Subscribers: <code>{sub_count}</code>\n"
             f"⚙️ Environment: <code>{settings.environment.upper()}</code>"
         )
