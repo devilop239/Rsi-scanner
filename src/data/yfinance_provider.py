@@ -18,6 +18,8 @@ from typing import Any
 
 import pandas as pd
 import yfinance as yf
+import requests
+from requests.adapters import HTTPAdapter
 from tenacity import (
     RetryError,
     retry,
